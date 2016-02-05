@@ -5,6 +5,17 @@
 
 #define MAX_MEMORY 8 * 1024
 
+#define RAM_START 0x80
+#define RAM_END 0xff
+#define VRAM_START 0x00
+#define VRAM_END 0x7f
+#define RIOT_START 0x200
+#define RIOT_END 0x2ff
+#define ROM_START 0x1000
+#define ROM_END 0x1fff
+#define STACK_START 0x01ff
+#define STACK_END 0x0100
+
 typedef unsigned char byte;
 
 typedef struct _state {

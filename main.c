@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
     fclose(f);
 
     while (cpu.pc < sz) {
-         cpu.pc += cpu_debugDecodeInstruction(&cpu, buffer);
+        cpu.pc += cpu_debugDecodeInstruction(&cpu, buffer);
     }
     
     return 0;

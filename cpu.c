@@ -21,7 +21,7 @@
 #define MASK_BIT0(x) (x & 0x01)
 
 static void cpu_setArithmeticFlags(Cpu *cpu, uint16_t result, 
-        uint8_t op1, uint8_t op2);
+        uint8_t op1);
 static void cpu_setZNFlags(Cpu *cpu, uint16_t result);
 static uint16_t cpu_fetchIIAX(Cpu *cpu, byte *buffer);
 static uint16_t cpu_fetchIIAY(Cpu *cpu, byte *buffer);
@@ -33,27 +33,26 @@ static void cpu_clearStateBit(Cpu *cpu, int bit);
 static uint8_t cpu_stateToWord(Cpu *cpu);
 static void cpu_wordToState(Cpu *cpu, uint8_t word);
 
-static inline void cpu_setArithmeticFlags(Cpu *cpu, uint16_t result, 
-        uint8_t op1, uint8_t op2) {
+static void cpu_setArithmeticFlags(Cpu *cpu, uint16_t result, 
+        uint8_t op1) {
     cpu->s.sign = MASK_SIGN(result);
-    cpu->s.overflow = ((MASK_SIGN(op1) == MASK_SIGN(op2)) &&
-            (MASK_SIGN(cpu_lowerByte(result)) != MASK_SIGN(op1)));
+    cpu->s.overflow = (MASK_SIGN(result) == MASK_SIGN(op1)) ? 1 : 0;
     cpu->s.zero = (result & 0xff) == 0 ? 1 : 0;
     cpu->s.carry = (result > WORD_MAX || result < WORD_MIN); 
 }
 
-static inline void cpu_setZNFlags(Cpu *cpu, uint16_t result) {
+static void cpu_setZNFlags(Cpu *cpu, uint16_t result) {
     cpu->s.sign = MASK_SIGN(result);
     cpu->s.zero = (result & 0xff) == 0 ? 1 : 0;
 }
 
-static inline uint16_t cpu_fetchIIAX(Cpu *cpu, byte *buffer) {
+static uint16_t cpu_fetchIIAX(Cpu *cpu, byte *buffer) {
     uint8_t baseAddress = (uint8_t) buffer[cpu->pc + 1] + cpu->x;
     return ((uint16_t) cpu->memory[baseAddress + 1] << 8) | 
         cpu->memory[baseAddress];
 }
 
-static inline uint16_t cpu_fetchIIAY(Cpu *cpu, byte *buffer) {
+static uint16_t cpu_fetchIIAY(Cpu *cpu, byte *buffer) {
     uint16_t address = (uint16_t) cpu->memory[buffer[cpu->pc + 1]] +
         (uint16_t) cpu->y;
     uint8_t lower = cpu_lowerByte(address);
@@ -64,19 +63,19 @@ static inline uint16_t cpu_fetchIIAY(Cpu *cpu, byte *buffer) {
     return address;
 }
 
-static inline uint8_t cpu_lowerByte(uint16_t dword) {
+static uint8_t cpu_lowerByte(uint16_t dword) {
     return (uint8_t) (dword & 0xff);
 }
 
-static inline uint8_t cpu_higherByte(uint16_t dword) {
+static uint8_t cpu_higherByte(uint16_t dword) {
     return (uint8_t) ((dword & 0xff00) >> 8);
 }
 
-static inline uint16_t cpu_toDWORD(uint8_t higher, uint8_t lower) {
+static uint16_t cpu_toDWORD(uint8_t higher, uint8_t lower) {
     return (((uint16_t) higher) << 8) | ((uint16_t) lower);
 }
 
-static inline void cpu_setStateBit(Cpu *cpu, int bit) {
+static void cpu_setStateBit(Cpu *cpu, int bit) {
     switch (bit) {
         case 7:
             cpu->s.sign = 1;
@@ -102,7 +101,7 @@ static inline void cpu_setStateBit(Cpu *cpu, int bit) {
     }
 }
 
-static inline void cpu_clearStateBit(Cpu *cpu, int bit) {
+static void cpu_clearStateBit(Cpu *cpu, int bit) {
     switch (bit) {
         case 7:
             cpu->s.sign = 0;
@@ -128,13 +127,13 @@ static inline void cpu_clearStateBit(Cpu *cpu, int bit) {
     }
 }
 
-static inline uint8_t cpu_stateToWord(Cpu *cpu) {
+static uint8_t cpu_stateToWord(Cpu *cpu) {
     return (cpu->s.sign << 7) | (cpu->s.overflow << 6) | 
         (cpu->s.breakpoint << 4) | (cpu->s.decimal << 3) | 
         (cpu->s.interrupt << 2) | (cpu->s.zero << 1) | cpu->s.carry;
 }
 
-static inline void cpu_wordToState(Cpu *cpu, uint8_t word) {
+static void cpu_wordToState(Cpu *cpu, uint8_t word) {
     cpu->s.sign = STATE_OVERFLOW(word);
     cpu->s.overflow = STATE_SIGN(word);
     cpu->s.breakpoint = STATE_BREAKPOINT(word);
@@ -147,11 +146,19 @@ static inline void cpu_wordToState(Cpu *cpu, uint8_t word) {
 void cpu_initialize(Cpu *cpu) {
     memset(cpu, 0, sizeof(Cpu));
 
-    cpu->sp = 0x01ff;
+    cpu->sp = STACK_START;
+    cpu->pc = ROM_START;
+
+    #ifdef DEBUG
+    printf("========== INITIAL STATE ==========\n\n");
+    printf("X: %x Y: %x ACC: %x SP: %x PC: %x\n", cpu->x, cpu->y, cpu->acc, 
+            cpu->sp, cpu->pc);
+    printf("\n===================================\n");
+    #endif
 }
 
 int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) { 
-    int opBytes = 1;
+    int pcOffset = 1;
 
     switch(buffer[cpu->pc]) {
         case 0x00: // BRK
@@ -159,7 +166,16 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("BRK\n");
                 #endif 
+                pcOffset = 0;
 
+                uint16_t address = cpu->pc + 1;
+                cpu->memory[cpu->sp] = cpu_higherByte(address);
+                cpu->sp--;
+                cpu->memory[cpu->sp] = cpu_lowerByte(address);
+                cpu->sp--;
+                cpu->memory[cpu->sp] = cpu_stateToWord(cpu) | 0x10;
+                cpu->sp--;
+                cpu->pc = (cpu->memory[0xffff] << 8) | cpu->memory[0xfffe];
             }
             break;
         case 0x01: // ORA ($NN, X)
@@ -167,7 +183,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
                 uint16_t result = (uint16_t) cpu->acc | 
@@ -181,7 +197,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = (uint16_t) cpu->acc | 
                     (uint16_t) cpu->memory[buffer[cpu->pc + 1]];
@@ -194,7 +210,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ASL $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint8_t address = buffer[cpu->pc + 1];
                 uint8_t result = (uint16_t) cpu->memory[address];
@@ -218,7 +234,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = (uint16_t) cpu->acc | 
                     (uint16_t) buffer[cpu->pc + 1];
@@ -242,7 +258,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -257,7 +273,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ASL $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -268,17 +284,24 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x10: // BPL $NN
-            #ifdef DEBUG
-            printf("BPL $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BPL $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (!cpu->s.sign) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0x11: // ORA ($NN),Y
             {
                 #ifdef DEBUG
                 printf("ORA $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
                 uint16_t result = cpu->acc | cpu->memory[address];
@@ -291,7 +314,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->acc | 
@@ -305,7 +328,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ASL $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -328,14 +351,13 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
                 uint16_t result = (uint16_t) cpu->acc | 
                     (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -344,7 +366,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ORA $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -359,7 +381,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ASL $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -370,17 +392,28 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x20: // JSR $NNNN
-            #ifdef DEBUG
-            printf("JSR $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("JSR $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                //pcOffset = 3;
+                pcOffset = 0;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]);
+                cpu->memory[cpu->sp] = cpu_lowerByte(cpu->pc);
+                cpu->sp--;
+                cpu->memory[cpu->sp] = cpu_higherByte(cpu->pc);
+                cpu->sp--;
+                cpu->pc = address;
+            }
             break;
         case 0x21: // AND($NN,X)
             {
                 #ifdef DEBUG
                 printf("AND ($%02x,X)\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
                 uint16_t result = (uint16_t) cpu->acc & 
@@ -390,17 +423,27 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x24: // BIT $NN
-            #ifdef DEBUG
-            printf("BIT $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BIT $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t address = buffer[cpu->pc + 1];
+                uint16_t result = cpu->acc & cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                cpu->s.overflow = ((MASK_SIGN(cpu->acc) == 
+                            MASK_SIGN(cpu->memory[address])) &&
+                           (MASK_SIGN(cpu_lowerByte(result)) != 
+                            MASK_SIGN(cpu->acc)));
+            }
             break;
         case 0x25: // AND $NN
             {
                 #ifdef DEBUG
                 printf("AND $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = (uint16_t) cpu->acc & 
                     (uint16_t) cpu->memory[buffer[cpu->pc + 1]];
@@ -413,7 +456,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROL $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint8_t address = buffer[cpu->pc + 1];
                 uint8_t result = (uint16_t) cpu->memory[address];
@@ -437,7 +480,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("AND #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = (uint16_t) cpu->acc & 
                     (uint16_t) buffer[cpu->pc + 1];
@@ -457,17 +500,28 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x2c: // BIT $NNNN
-            #ifdef DEBUG
-            printf("BIT $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("BIT $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]);
+                uint16_t result = cpu->acc & cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                cpu->s.overflow = ((MASK_SIGN(cpu->acc) == 
+                            MASK_SIGN(cpu->memory[address])) &&
+                           (MASK_SIGN(cpu_lowerByte(result)) != 
+                            MASK_SIGN(cpu->acc)));
+            }
             break;
         case 0x2d: // AND $NNNN
             {
                 #ifdef DEBUG
                 printf("AND $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -482,7 +536,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROL $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -493,17 +547,24 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x30: // BMI $NN
-            #ifdef DEBUG
-            printf("BMI $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BMI $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (cpu->s.sign) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0x31: // AND ($NN),Y
             {
                 #ifdef DEBUG
                 printf("AND $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
                 uint16_t result = cpu->acc & cpu->memory[address];
@@ -516,7 +577,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("AND $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->acc & 
@@ -530,7 +591,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROL $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -553,14 +614,13 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("AND $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
                 uint16_t result = (uint16_t) cpu->acc & 
                     (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -569,7 +629,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("AND $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -584,7 +644,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROL $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -595,16 +655,27 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x40: // RTI
-            #ifdef DEBUG
-            printf("RTI\n");
-            #endif 
+            {
+                #ifdef DEBUG
+                printf("RTI\n");
+                #endif 
+                pcOffset = 0;
+
+                cpu->sp--;
+                cpu_wordToState(cpu, cpu->memory[cpu->sp]);
+                cpu->sp--;
+                uint8_t l = cpu->memory[cpu->sp];
+                cpu->sp--;
+                uint8_t h = cpu->memory[cpu->sp] << 8;
+                cpu->pc = h | l;
+            }
             break;
         case 0x41: // EOR($NN,X)
             {
                 #ifdef DEBUG
                 printf("EOR $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
                 uint16_t result = (uint16_t) cpu->acc ^ 
@@ -618,7 +689,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("EOR $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = (uint16_t) cpu->acc ^ 
                     (uint16_t) cpu->memory[buffer[cpu->pc + 1]];
@@ -631,7 +702,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LSR $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint8_t address = buffer[cpu->pc + 1];
                 uint8_t result = (uint16_t) cpu->memory[address];
@@ -656,7 +727,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("EOR #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = (uint16_t) cpu->acc ^ 
                     (uint16_t) buffer[cpu->pc + 1];
@@ -677,17 +748,24 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x4c: // JMP $NNNN
-            #ifdef DEBUG
-            printf("JMP $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("JMP $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                //pcOffset = 3;
+                pcOffset = 0;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]);
+                cpu->pc = address;
+            }
             break;
         case 0x4d: // EOR $NNNN 
             { 
                 #ifdef DEBUG
                 printf("EOR $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -702,7 +780,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LSR $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -714,17 +792,24 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x50: // BVC $NN
-            #ifdef DEBUG
-            printf("BVC $%02x,X\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BVC $%02x,X\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (!cpu->s.overflow) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0x51: // EOR($NN),Y
             {
                 #ifdef DEBUG
                 printf("EOR $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
                 uint16_t result = cpu->acc ^ cpu->memory[address];
@@ -737,7 +822,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("EOR $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->acc ^ 
@@ -752,7 +837,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LSR $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -776,14 +861,13 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("EOR $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
                 uint16_t result = (uint16_t) cpu->acc ^ 
                     (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -792,7 +876,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("EOR $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -807,7 +891,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LSR $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -819,21 +903,35 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x60: // RTS
-            #ifdef DEBUG
-            printf("RTS\n");
-            #endif
+            {
+                #ifdef DEBUG
+                printf("RTS\n");
+                #endif
+                pcOffset = 0;
+
+                cpu->sp++;
+                uint16_t address = cpu->memory[cpu->sp];
+                cpu->sp++;
+                address |= (cpu->memory[cpu->sp] << 8);
+                cpu->pc = address + 1;
+            }
             break;
         case 0x61: // ADC($NN,X)
             {
                 #ifdef DEBUG
                 printf("ADC $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                    // TODO: Implement decimal add
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) cpu->memory[address] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -842,12 +940,15 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ADC $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) cpu->memory[buffer[cpu->pc + 1]];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[buffer[cpu->pc + 1]]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) cpu->memory[buffer[cpu->pc + 1]] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -856,7 +957,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROR $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint8_t address = buffer[cpu->pc + 1];
                 uint8_t result = (uint16_t) cpu->memory[address];
@@ -880,12 +981,15 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ADC #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
-
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) buffer[cpu->pc + 1];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        buffer[cpu->pc + 1]);
+                pcOffset = 2;
+                
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) buffer[cpu->pc + 1] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -901,24 +1005,33 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x6c: // JMP $NN
-            #ifdef DEBUG
-            printf("JMP $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("JMP $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                //pcOffset = 2;
+                pcOffset = 0;
+
+                uint16_t address = buffer[cpu->pc + 1];
+                cpu->pc = address;
+            }
             break;
         case 0x6d: // ADC $NNNN
             {
                 #ifdef DEBUG
                 printf("ADC $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) cpu->memory[address] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -927,7 +1040,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROR $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -938,22 +1051,32 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x70: // BVS $NN
-            #ifdef DEBUG
-            printf("BVS $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BVS $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (cpu->s.overflow) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0x71: // ADC($NN),Y
             {
                 #ifdef DEBUG
                 printf("ADC $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
-                uint16_t result = cpu->acc + cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = cpu->acc + cpu->memory[address] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -962,12 +1085,16 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ADC $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) cpu->memory[address] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -976,7 +1103,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROR $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -999,14 +1126,17 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ADC $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) cpu->memory[address] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1015,14 +1145,17 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ADC $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
-                uint16_t result = (uint16_t) cpu->acc + 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc + 
+                        (uint16_t) cpu->memory[address] + cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1031,7 +1164,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("ROR $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -1046,7 +1179,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STA $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
                 cpu->memory[address] = cpu->acc;
@@ -1057,7 +1190,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STY $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 cpu->memory[address] = cpu->y;
@@ -1068,7 +1201,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STA $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 cpu->memory[address] = cpu->acc;
@@ -1079,7 +1212,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STX $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 cpu->memory[address] = cpu->x;
@@ -1111,7 +1244,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STY $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -1123,7 +1256,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STA $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -1135,7 +1268,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STX $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -1143,17 +1276,24 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0x90: // BCC $NN
-            #ifdef DEBUG
-            printf("BCC $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BCC $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (!cpu->s.carry) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0x91: // STA ($NN),Y
             {
                 #ifdef DEBUG
                 printf("STA $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
                 cpu->memory[address] = cpu->acc;
@@ -1164,7 +1304,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STY $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 cpu->memory[address] = cpu->y;
@@ -1175,7 +1315,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STA $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 cpu->memory[address] = cpu->acc;
@@ -1186,7 +1326,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STX $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->y + (uint16_t) buffer[cpu->pc + 1];
                 cpu->memory[address] = cpu->x;
@@ -1207,7 +1347,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STA $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
@@ -1228,7 +1368,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("STA $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -1240,7 +1380,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDY #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = buffer[cpu->pc + 1];
                 cpu_setZNFlags(cpu, result);
@@ -1252,7 +1392,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA ($%02x,X)\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
                 uint16_t result = cpu->memory[address];
@@ -1265,7 +1405,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDX #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
  
                 uint16_t result = buffer[cpu->pc + 1];
                 cpu_setZNFlags(cpu, result);
@@ -1277,7 +1417,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDY $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -1290,7 +1430,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -1303,7 +1443,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDX $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 uint16_t result = cpu->memory[address];
@@ -1326,7 +1466,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t result = buffer[cpu->pc + 1];
                 cpu_setZNFlags(cpu, result);
@@ -1348,7 +1488,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDY $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -1362,7 +1502,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -1376,7 +1516,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDX $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
@@ -1386,17 +1526,24 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xb0: // BCS $NN
-            #ifdef DEBUG
-            printf("BCS $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BCS $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (cpu->s.carry) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0xb1: // LDA ($NN),Y
             {
                 #ifdef DEBUG
                 printf("LDA $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
                 uint16_t result = cpu->memory[address];
@@ -1409,9 +1556,9 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDY $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
-                uint16_t address = (uint16_t) cpu->y + (uint16_t) buffer[cpu->pc + 1];
+                uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address];
                 cpu_setZNFlags(cpu, result);
                 cpu->y = result;
@@ -1422,7 +1569,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address];
@@ -1435,7 +1582,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDX $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->y + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address];
@@ -1457,7 +1604,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
@@ -1480,7 +1627,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDY $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -1494,7 +1641,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDA $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -1509,7 +1656,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("LDX $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
@@ -1519,35 +1666,71 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xc0: // CPY #$NN
-            #ifdef DEBUG
-            printf("CPY #$%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CPY #$%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t result = (uint16_t) cpu->y - 
+                    (uint16_t) buffer[cpu->pc + 1];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xc1: // CMP($NN,X)
-            #ifdef DEBUG
-            printf("CMP $%02x,X\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x,X\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t address = cpu_fetchIIAX(cpu, buffer);
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xc4: // CPY $NN
-            #ifdef DEBUG
-            printf("CPY $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CPY $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t address = buffer[cpu->pc + 1];
+                uint16_t result = (uint16_t) cpu->y - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xc5: // CMP $NN
-            #ifdef DEBUG
-            printf("CMP $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t address = buffer[cpu->pc + 1];
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xc6: // DEC $NN
             {
                 #ifdef DEBUG
                 printf("DEC $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address] - 1;
@@ -1567,10 +1750,19 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xc9: // CMP #$NN
-            #ifdef DEBUG
-            printf("CMP #$%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CMP #$%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t result = (uint16_t) cpu->acc - 
+                    (uint16_t) buffer[cpu->pc + 1];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xca: // DEX
             {
@@ -1584,23 +1776,43 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xcc: // CPY $NNNN
-            #ifdef DEBUG
-            printf("CPY $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("CPY $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]);
+                uint16_t result = (uint16_t) cpu->y - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xcd: // CMP $NNNN
-            #ifdef DEBUG
-            printf("CMP $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]);
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xce: // DEC $NNNN
             {
                 #ifdef DEBUG
-                printf("DEC $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                printf("DEC $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 uint16_t result = (uint16_t) cpu->memory[address] - 1;
@@ -1609,29 +1821,55 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xd0: // BNE $NN
-            #ifdef DEBUG
-            printf("BNE $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BNE $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (!cpu->s.zero) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0xd1: // CMP ($NN),Y
-            #ifdef DEBUG
-            printf("CMP $%02x,Y\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x,Y\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t address = cpu_fetchIIAY(cpu, buffer);
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+
+            }
             break;
         case 0xd5: // CMP $NN,X
-            #ifdef DEBUG
-            printf("CMP $%02x,X\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x,X\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xd6: // DEC $NN,X
             {
                 #ifdef DEBUG
                 printf("DEC $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address] - 1;
@@ -1649,62 +1887,105 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xd9: // CMP $NNNN,Y
-            #ifdef DEBUG
-            printf("CMP $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xdd: // CMP $NNNN,X
-            #ifdef DEBUG
-            printf("CMP $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("CMP $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
+                uint16_t result = (uint16_t) cpu->acc - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xde: // DEC $NNNN,X
             {
                 #ifdef DEBUG
                 printf("DEC $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
                 uint16_t result = (uint16_t) cpu->memory[address] - 1;
                 cpu_setZNFlags(cpu, result);
+                cpu->memory[address] = result;               
             }
             break;
         case 0xe0: // CPX #$NN
-            #ifdef DEBUG
-            printf("CPX #$%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("CPX #$%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                uint16_t result = (uint16_t) cpu->x - 
+                    (uint16_t) buffer[cpu->pc + 1];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xe1: // SBC($NN,X)
             {
                 #ifdef DEBUG
                 printf("SBC $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAX(cpu, buffer);
-                uint16_t result = (uint16_t) cpu->acc - 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc - 
+                        (uint16_t) cpu->memory[address] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
         case 0xe4: // CPX $NN
-            #ifdef DEBUG
-            printf("CPX $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("CPX $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = buffer[cpu->pc + 1];
+                uint16_t result = (uint16_t) cpu->x - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xe6: // INC $NN
             {
                 #ifdef DEBUG
                 printf("INC $%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address] + 1;
@@ -1728,39 +2009,57 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("SBC #$%02x\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
-                uint16_t result = (uint16_t) cpu->acc - 
-                    (uint16_t) buffer[cpu->pc + 1];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        buffer[cpu->pc + 1]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc - 
+                        (uint16_t) buffer[cpu->pc + 1] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
         case 0xea: // NOP
-            #ifdef DEBUG
-            printf("NOP\n");
-            #endif 
+            {
+                #ifdef DEBUG
+                printf("NOP\n");
+                #endif 
+            }
             break;
         case 0xec: // CPX $NNNN
-            #ifdef DEBUG
-            printf("CPX $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 3;
+            {
+                #ifdef DEBUG
+                printf("CPX $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 3;
+
+                uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
+                        buffer[cpu->pc + 1]);
+                uint16_t result = (uint16_t) cpu->x - (uint16_t) cpu->memory[address];
+                cpu_setZNFlags(cpu, result);
+                if (result >= 0) {
+                    cpu_setStateBit(cpu, 0);
+                }
+            }
             break;
         case 0xed: // SBC $NNNN
             {
                 #ifdef DEBUG
                 printf("SBC $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]);
-                uint16_t result = (uint16_t) cpu->acc - 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc - 
+                        (uint16_t) cpu->memory[address] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1769,7 +2068,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("INC $%02x%02x\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 uint16_t result = (uint16_t) cpu->memory[address] + 1;
@@ -1778,22 +2077,32 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             }
             break;
         case 0xf0: // BEQ $NN
-            #ifdef DEBUG
-            printf("BEQ $%02x\n", buffer[cpu->pc + 1]);
-            #endif 
-            opBytes = 2;
+            {
+                #ifdef DEBUG
+                printf("BEQ $%02x\n", buffer[cpu->pc + 1]);
+                #endif 
+                pcOffset = 2;
+
+                if (cpu->s.zero) {
+                    uint16_t address = buffer[cpu->pc + 1];
+                    cpu->pc += address - 2;
+                }
+            }
             break;
         case 0xf1: // SBC ($NN),Y
             {
                 #ifdef DEBUG
                 printf("SBC $%02x,Y\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = cpu_fetchIIAY(cpu, buffer);
-                uint16_t result = cpu->acc - cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = cpu->acc - cpu->memory[address] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1802,12 +2111,16 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("SBC $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
-                uint16_t result = (uint16_t) cpu->acc - 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc - 
+                        (uint16_t) cpu->memory[address] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1816,7 +2129,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("INC $%02x,X\n", buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 2;
+                pcOffset = 2;
                 
                 uint16_t address = (uint16_t) cpu->x + (uint16_t) buffer[cpu->pc + 1];
                 uint16_t result = (uint16_t) cpu->memory[address] + 1;
@@ -1838,14 +2151,17 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("SBC $%02x%02x,Y\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->y;
-                uint16_t result = (uint16_t) cpu->acc - 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc - 
+                        (uint16_t) cpu->memory[address] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1854,14 +2170,17 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("SBC $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
-                uint16_t result = (uint16_t) cpu->acc - 
-                    (uint16_t) cpu->memory[address];
-                cpu_setArithmeticFlags(cpu, result, cpu->acc, 
-                        cpu->memory[address]);
+                uint16_t result;
+                if (cpu->s.decimal) {
+                } else {
+                    result = (uint16_t) cpu->acc - 
+                        (uint16_t) cpu->memory[address] - !cpu->s.carry;
+                }
+                cpu_setArithmeticFlags(cpu, result, cpu->acc);
                 cpu->acc = result;
             }
             break;
@@ -1870,7 +2189,7 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
                 #ifdef DEBUG
                 printf("INC $%02x%02x,X\n", buffer[cpu->pc + 2], buffer[cpu->pc + 1]);
                 #endif 
-                opBytes = 3;
+                pcOffset = 3;
 
                 uint16_t address = cpu_toDWORD(buffer[cpu->pc + 2], 
                         buffer[cpu->pc + 1]) + (uint16_t) cpu->x;
@@ -1881,5 +2200,25 @@ int cpu_debugDecodeInstruction(Cpu *cpu, byte *buffer) {
             break;
     }
 
-    return opBytes;
+    #ifdef DEBUG
+    printf("X: %02x Y: %02x ACC: %02x SP: %04x PC: %04x\n", cpu->x, cpu->y, cpu->acc, 
+            cpu->sp, cpu->pc + pcOffset);
+    if (cpu->s.sign) printf("N"); else printf("n");
+    if (cpu->s.overflow) printf("V"); else printf("v");
+    if (cpu->s.breakpoint) printf("B"); else printf("b");
+    if (cpu->s.decimal) printf("D"); else printf("d");
+    if (cpu->s.interrupt) printf("I"); else printf("i");
+    if (cpu->s.zero) printf("Z"); else printf("z");
+    if (cpu->s.carry) printf("C"); else printf("c");
+    printf("\n");
+        #ifdef DEBUG_MEMORY_FOOTPRINT
+        printf("0000: ");
+        for (int i = 0; i < 32; i++) printf("%02x ", cpu->memory[i]);
+        printf("\n01df: ");
+        for (int i = 0; i < 32; i++) printf("%02x ", cpu->memory[0x01df + i]);
+        printf("\n===================================\n");
+        #endif
+    #endif
+
+    return pcOffset;
 }
